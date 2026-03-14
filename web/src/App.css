@@ -233,6 +233,15 @@ label {
   background: rgba(0, 209, 255, 0.05);
 }
 
+.static-chip {
+  cursor: default;
+}
+
+.static-chip:hover {
+  transform: none;
+  box-shadow: none;
+}
+
 .wall {
   padding: 14px;
 }

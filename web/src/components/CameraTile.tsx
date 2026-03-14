@@ -1,29 +1,88 @@
 import './CameraTile.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import Hls from 'hls.js'
 
 interface CameraTileProps {
   id: string
   name: string
   location: string
   status?: 'online' | 'offline' | 'degraded' | 'loading'
-  streamType?: 'snapshot' | 'hls' | 'mjpeg' | 'none'
+  streamType?: 'snapshot' | 'hls' | 'mjpeg' | 'embed' | 'none'
+  feedKind?: 'live' | 'snapshot'
   streamUrl?: string
   relayUrl?: string
+  refreshIntervalMs?: number
   source?: string
+  sourceUrl?: string
+  isHidden?: boolean
+  onToggleHidden?: () => void
+  userTag?: string
+  recommendedTags?: string[]
+  onSetTag?: (tag: string) => void
+  onAddCustomTag?: () => void
+  onClearTag?: () => void
+  onEditTag?: () => void
   onClick?: () => void
   isActive?: boolean
 }
 
 type HealthState = 'online' | 'offline' | 'degraded'
 
-const BASE_REFRESH_MS = 4000
-const FIRST_FRAME_TIMEOUT_MS = 2200
+const DEFAULT_REFRESH_MS = 4000
+const FIRST_FRAME_TIMEOUT_MS = 6000
 const MAX_BACKOFF_MS = 12000
 const OFFLINE_FAILURE_THRESHOLD = 2
 
-function getRefreshOffset(id: string): number {
+function getRefreshOffset(id: string, refreshIntervalMs: number): number {
   const sum = id.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0)
-  return sum % BASE_REFRESH_MS
+  return sum % refreshIntervalMs
+}
+
+function formatRefreshInterval(refreshIntervalMs: number): string {
+  if (refreshIntervalMs % 60000 === 0) return `${refreshIntervalMs / 60000}m`
+  if (refreshIntervalMs % 1000 === 0) return `${refreshIntervalMs / 1000}s`
+  return `${refreshIntervalMs}ms`
+}
+
+function isMySGRoadBridge(url?: string): boolean {
+  return typeof url === 'string' && url.startsWith('/proxy/mysgroad/')
+}
+
+function getMySGRoadCameraPrefix(streamUrl: string): string | null {
+  const filename = streamUrl.split('/').pop()?.split('?')[0] ?? ''
+  const match = filename.match(/^(.*-\d+[a-z]?)-\d+\.jpg$/i)
+  return match ? `${match[1]}-` : null
+}
+
+async function resolveMySGRoadSnapshotUrl(pageUrl: string, currentImageUrl: string): Promise<string | null> {
+  const prefix = getMySGRoadCameraPrefix(currentImageUrl)
+  if (!prefix) return null
+
+  const response = await fetch(pageUrl, {
+    credentials: 'same-origin',
+    headers: {
+      accept: 'text/html,application/xhtml+xml',
+    },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to load route page: ${response.status}`)
+  }
+
+  const html = await response.text()
+  const regex = /(?:https:\/\/www\.mysgroad\.com)?(\/sites\/mysgroad\/files\/img\/[^"' ]+?\.jpg)/gi
+  let match: RegExpExecArray | null
+
+  while ((match = regex.exec(html)) !== null) {
+    const candidate = `https://www.mysgroad.com${match[1]}`
+    const candidateFilename = candidate.split('/').pop()?.split('?')[0] ?? ''
+
+    if (candidateFilename.startsWith(prefix)) {
+      return candidate
+    }
+  }
+
+  return null
 }
 
 function buildFrameUrl(url: string, frameToken: number): string {
@@ -84,26 +143,55 @@ function CameraTile({
   location,
   status = 'loading',
   streamType = 'none',
+  feedKind,
   streamUrl,
   relayUrl,
+  refreshIntervalMs,
   source,
+  sourceUrl,
+  isHidden = false,
+  onToggleHidden,
+  userTag,
+  recommendedTags = [],
+  onSetTag,
+  onAddCustomTag,
+  onClearTag,
+  onEditTag,
   onClick,
   isActive = false
 }: CameraTileProps) {
   const canUseSnapshot = streamType === 'snapshot' && !!streamUrl
-  const refreshOffset = useMemo(() => getRefreshOffset(id), [id])
+  const canUseHls = streamType === 'hls' && !!streamUrl
+  const canUseEmbed = streamType === 'embed' && !!streamUrl
+  const canUseStream = canUseSnapshot || canUseHls || canUseEmbed
+  const isMySGRoadRouteBridge = useMemo(() => isMySGRoadBridge(relayUrl), [relayUrl])
+  const effectiveRefreshIntervalMs = useMemo(
+    () => Math.max(1000, refreshIntervalMs ?? DEFAULT_REFRESH_MS),
+    [refreshIntervalMs]
+  )
+  const refreshOffset = useMemo(
+    () => getRefreshOffset(id, effectiveRefreshIntervalMs),
+    [effectiveRefreshIntervalMs, id]
+  )
+  const cadenceLabel = useMemo(
+    () => formatRefreshInterval(effectiveRefreshIntervalMs),
+    [effectiveRefreshIntervalMs]
+  )
 
   const [displayedSrc, setDisplayedSrc] = useState<string | null>(null)
   const [healthState, setHealthState] = useState<HealthState>('degraded')
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
   const [isUsingFallback, setIsUsingFallback] = useState(false)
   const [isViaRelay, setIsViaRelay] = useState(false)
+  const [isTagPickerOpen, setIsTagPickerOpen] = useState(false)
 
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   const hasFrameRef = useRef(false)
   const failureStreakRef = useRef(0)
   const successStreakRef = useRef(0)
   const stoppedRef = useRef(false)
   const activeStreamRef = useRef<string>(streamUrl ?? '')
+  const isUsingPageBridgeRef = useRef(false)
 
   useEffect(() => {
     if (!canUseSnapshot || !streamUrl) {
@@ -120,6 +208,7 @@ function CameraTile({
     failureStreakRef.current = 0
     successStreakRef.current = 0
     activeStreamRef.current = streamUrl
+    isUsingPageBridgeRef.current = false
 
     const onSuccess = (nextSrc: string) => {
       if (stoppedRef.current) return
@@ -131,7 +220,7 @@ function CameraTile({
       setIsUsingFallback(
         activeStreamRef.current.includes('fallback') || activeStreamRef.current.includes('firstframe')
       )
-      setIsViaRelay(activeStreamRef.current.startsWith('relay://'))
+      setIsViaRelay(activeStreamRef.current.startsWith('relay://') || isUsingPageBridgeRef.current)
       setHealthState('online')
     }
 
@@ -141,7 +230,12 @@ function CameraTile({
       successStreakRef.current = 0
       failureStreakRef.current += 1
 
-      if (!hasFrameRef.current && relayUrl && !activeStreamRef.current.startsWith('relay://')) {
+      if (
+        !hasFrameRef.current &&
+        relayUrl &&
+        !isMySGRoadRouteBridge &&
+        !activeStreamRef.current.startsWith('relay://')
+      ) {
         activeStreamRef.current = relayUrl
         setIsViaRelay(true)
       } else if (!hasFrameRef.current && !activeStreamRef.current.startsWith('local://') && !activeStreamRef.current.startsWith('relay://')) {
@@ -162,7 +256,7 @@ function CameraTile({
       }, backoff)
     }
 
-    const loadAndSwapFrame = () => {
+    const loadAndSwapFrame = async () => {
       if (stoppedRef.current) return
 
       const frameToken = Date.now()
@@ -172,7 +266,27 @@ function CameraTile({
         return
       }
 
-      const nextSrc = resolveFrameSrc(id, name, location, activeStreamRef.current, frameToken)
+      let nextStreamUrl = activeStreamRef.current
+
+      if (
+        isMySGRoadRouteBridge &&
+        relayUrl &&
+        !nextStreamUrl.startsWith('local://') &&
+        !nextStreamUrl.startsWith('relay://')
+      ) {
+        try {
+          const latestRouteImageUrl = await resolveMySGRoadSnapshotUrl(relayUrl, nextStreamUrl)
+          if (latestRouteImageUrl) {
+            nextStreamUrl = latestRouteImageUrl
+            activeStreamRef.current = latestRouteImageUrl
+            isUsingPageBridgeRef.current = true
+          }
+        } catch {
+          isUsingPageBridgeRef.current = false
+        }
+      }
+
+      const nextSrc = resolveFrameSrc(id, name, location, nextStreamUrl, frameToken)
       const img = new Image()
 
       img.onload = async () => {
@@ -193,8 +307,10 @@ function CameraTile({
 
     startTimerId = window.setTimeout(() => {
       if (stoppedRef.current) return
-      loadAndSwapFrame()
-      intervalId = window.setInterval(loadAndSwapFrame, BASE_REFRESH_MS)
+      void loadAndSwapFrame()
+      intervalId = window.setInterval(() => {
+        void loadAndSwapFrame()
+      }, effectiveRefreshIntervalMs)
     }, refreshOffset)
 
     firstFrameTimerId = window.setTimeout(() => {
@@ -206,7 +322,7 @@ function CameraTile({
         activeStreamRef.current = `local://firstframe/${id}`
         setIsUsingFallback(true)
       }
-      loadAndSwapFrame()
+      void loadAndSwapFrame()
     }, FIRST_FRAME_TIMEOUT_MS + refreshOffset)
 
     return () => {
@@ -216,9 +332,138 @@ function CameraTile({
       if (retryTimerId) window.clearTimeout(retryTimerId)
       if (intervalId) window.clearInterval(intervalId)
     }
-  }, [canUseSnapshot, id, location, name, refreshOffset, streamUrl, relayUrl])
+  }, [canUseSnapshot, effectiveRefreshIntervalMs, id, isMySGRoadRouteBridge, location, name, refreshOffset, streamUrl, relayUrl])
 
-  const tileStatus: HealthState = canUseSnapshot
+  useEffect(() => {
+    if (!canUseHls || !streamUrl) {
+      return
+    }
+
+    const video = videoRef.current
+    if (!video) {
+      return
+    }
+
+    let hls: Hls | null = null
+    let stopped = false
+
+    const markOnline = () => {
+      if (stopped) return
+      setHealthState('online')
+      setLastUpdatedAt(Date.now())
+    }
+
+    const markDegraded = () => {
+      if (stopped) return
+      setHealthState((current) => current === 'offline' ? current : 'degraded')
+    }
+
+    const markOffline = () => {
+      if (stopped) return
+      setHealthState('offline')
+    }
+
+    const tryPlay = () => {
+      void video.play().catch(() => {
+        markDegraded()
+      })
+    }
+
+    const handleLoadedData = () => markOnline()
+    const handleCanPlay = () => {
+      markOnline()
+      tryPlay()
+    }
+    const handlePlaying = () => markOnline()
+    const handleWaiting = () => markDegraded()
+    const handleStalled = () => markDegraded()
+    const handleVideoError = () => markOffline()
+
+    video.muted = true
+    video.autoplay = true
+    video.playsInline = true
+
+    video.addEventListener('loadeddata', handleLoadedData)
+    video.addEventListener('canplay', handleCanPlay)
+    video.addEventListener('playing', handlePlaying)
+    video.addEventListener('waiting', handleWaiting)
+    video.addEventListener('stalled', handleStalled)
+    video.addEventListener('error', handleVideoError)
+
+    if (Hls.isSupported()) {
+      hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: true,
+      })
+
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        hls?.loadSource(streamUrl)
+      })
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        markOnline()
+        tryPlay()
+      })
+
+      hls.on(Hls.Events.FRAG_CHANGED, () => {
+        markOnline()
+      })
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (!data.fatal) {
+          markDegraded()
+          return
+        }
+
+        if (!hls) {
+          markOffline()
+          return
+        }
+
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          markDegraded()
+          hls.startLoad()
+          return
+        }
+
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          markDegraded()
+          hls.recoverMediaError()
+          return
+        }
+
+        markOffline()
+        hls.destroy()
+        hls = null
+      })
+
+      hls.attachMedia(video)
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = streamUrl
+      tryPlay()
+    } else {
+      markOffline()
+    }
+
+    return () => {
+      stopped = true
+      video.pause()
+      video.removeEventListener('loadeddata', handleLoadedData)
+      video.removeEventListener('canplay', handleCanPlay)
+      video.removeEventListener('playing', handlePlaying)
+      video.removeEventListener('waiting', handleWaiting)
+      video.removeEventListener('stalled', handleStalled)
+      video.removeEventListener('error', handleVideoError)
+      if (hls) {
+        hls.destroy()
+      } else {
+        video.removeAttribute('src')
+        video.load()
+      }
+    }
+  }, [canUseHls, streamUrl])
+
+  const tileStatus: HealthState = canUseStream
     ? healthState
     : status === 'online'
       ? 'online'
@@ -231,12 +476,49 @@ function CameraTile({
     : 'pending'
 
   const renderViewport = () => {
+    if (canUseEmbed && streamUrl) {
+      return (
+        <div className="viewport-live">
+          <iframe
+            src={streamUrl}
+            title={`Embedded live feed from ${name}`}
+            className="live-embed"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
+            referrerPolicy="strict-origin-when-cross-origin"
+            onLoad={() => {
+              setHealthState('online')
+              setLastUpdatedAt(Date.now())
+            }}
+          />
+          <div className="snapshot-observability">
+            <span className="cadence-pill">{feedKind === 'snapshot' ? `REFRESH ${cadenceLabel}` : 'LIVE EMBED'}</span>
+            <span className="updated-pill">UPDATED {lastUpdatedLabel}</span>
+          </div>
+          {source && <div className="stream-attribution">{source}</div>}
+        </div>
+      )
+    }
+
+    if (canUseHls) {
+      return (
+        <div className="viewport-live">
+          <video ref={videoRef} className="live-video" muted autoPlay playsInline />
+          <div className="snapshot-observability">
+            <span className="cadence-pill">LIVE HLS</span>
+            <span className="updated-pill">UPDATED {lastUpdatedLabel}</span>
+          </div>
+          {source && <div className="stream-attribution">{source}</div>}
+        </div>
+      )
+    }
+
     if (canUseSnapshot && displayedSrc) {
       return (
         <div className="viewport-live">
           <img src={displayedSrc} alt={`Live feed from ${name}`} className="live-image" />
           <div className="snapshot-observability">
-            <span className="cadence-pill">REFRESH {BASE_REFRESH_MS / 1000}s</span>
+            <span className="cadence-pill">REFRESH {cadenceLabel}</span>
             <span className="updated-pill">UPDATED {lastUpdatedLabel}</span>
             {isViaRelay && <span className="relay-pill">VIA RELAY</span>}
             {isUsingFallback && <span className="fallback-pill">FALLBACK ACTIVE</span>}
@@ -254,7 +536,7 @@ function CameraTile({
         </svg>
         {canUseSnapshot && (
           <div className="snapshot-observability placeholder-mode">
-            <span className="cadence-pill">REFRESH {BASE_REFRESH_MS / 1000}s</span>
+            <span className="cadence-pill">REFRESH {cadenceLabel}</span>
             <span className="updated-pill">UPDATED {lastUpdatedLabel}</span>
           </div>
         )}
@@ -275,19 +557,129 @@ function CameraTile({
     >
       <div className="tile-header">
         <div className="tile-info">
-          <span className="tile-id">#{id}</span>
-          <span className={`tile-status ${tileStatus}`}>{tileStatus.toUpperCase()}</span>
-          {streamType !== 'none' && streamUrl && (
-            <span className="stream-type-badge">{streamType.toUpperCase()}</span>
-          )}
+          <div className="tile-info-left">
+            <span className="tile-id">#{id}</span>
+            <span className={`tile-status ${tileStatus}`}>{tileStatus.toUpperCase()}</span>
+            {isHidden && <span className="hidden-state-badge">HIDDEN</span>}
+          </div>
+          <div className="tile-info-right">
+            {streamType !== 'none' && streamUrl && (
+              <span className="stream-type-badge">{streamType.toUpperCase()}</span>
+            )}
+            {onToggleHidden && (
+              <button
+                type="button"
+                className={`quick-hide-btn ${isHidden ? 'active' : ''}`}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onToggleHidden()
+                }}
+                onKeyDown={(event) => event.stopPropagation()}
+              >
+                {isHidden ? 'Unhide' : 'Hide'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
       <div className="tile-viewport">{renderViewport()}</div>
 
       <div className="tile-footer">
-        <div className="tile-name">{name}</div>
-        <div className="tile-location">{location}</div>
+        <div className="tile-footer-main">
+          <div className="tile-name">{name}</div>
+          <div className="tile-location">{location}</div>
+        </div>
+        {sourceUrl && (
+          <div className="tile-action-row">
+            <a
+              className="source-open-link"
+              href={sourceUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              title={sourceUrl}
+              onClick={(event) => event.stopPropagation()}
+              onKeyDown={(event) => event.stopPropagation()}
+            >
+              Open Source Page
+            </a>
+          </div>
+        )}
+        {onEditTag && (
+          <div className="tile-tag-row">
+            <div className="tile-tag-meta">
+              {userTag ? (
+                <span className="user-tag-badge" title={userTag}>{userTag}</span>
+              ) : (
+                <span className="user-tag-placeholder">No tag</span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="tag-edit-btn"
+              onClick={(event) => {
+                event.stopPropagation()
+                setIsTagPickerOpen((current) => !current)
+              }}
+              onKeyDown={(event) => {
+                event.stopPropagation()
+              }}
+            >
+              {isTagPickerOpen ? 'Close Tags' : (userTag ? 'Edit Tag' : 'Add Tag')}
+            </button>
+          </div>
+        )}
+        {onEditTag && isTagPickerOpen && (
+          <div
+            className="tag-picker-panel"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            {recommendedTags.length > 0 && (
+              <div className="tag-picker-group">
+                <span className="tag-picker-label">Recommended</span>
+                <div className="tag-picker-chip-row">
+                  {recommendedTags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      className={`tag-choice-btn ${userTag === tag ? 'active' : ''}`}
+                      onClick={() => {
+                        onSetTag?.(tag)
+                        setIsTagPickerOpen(false)
+                      }}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="tag-picker-actions">
+              <button
+                type="button"
+                className="tag-picker-action-btn"
+                onClick={() => {
+                  onAddCustomTag?.()
+                  setIsTagPickerOpen(false)
+                }}
+              >
+                Custom
+              </button>
+              <button
+                type="button"
+                className="tag-picker-action-btn danger"
+                onClick={() => {
+                  onClearTag?.()
+                  setIsTagPickerOpen(false)
+                }}
+                disabled={!userTag}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
