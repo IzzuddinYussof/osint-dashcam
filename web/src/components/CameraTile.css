@@ -1,0 +1,227 @@
+.camera-tile {
+  position: relative;
+  background: linear-gradient(145deg, #0d1524, #0a111f);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: all 0.25s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.camera-tile:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft), 0 4px 16px rgba(0, 209, 255, 0.15);
+  transform: translateY(-2px);
+}
+
+.camera-tile.clickable {
+  cursor: pointer;
+}
+
+.camera-tile.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft), 0 0 18px rgba(0, 209, 255, 0.2);
+}
+
+.tile-header {
+  padding: 8px 10px;
+  background: rgba(13, 21, 36, 0.8);
+  border-bottom: 1px solid var(--border);
+}
+
+.tile-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.tile-id {
+  font-size: 11px;
+  color: var(--text-soft);
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.05em;
+}
+
+.tile-status {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tile-status.online {
+  color: var(--ok);
+  background: rgba(34, 197, 94, 0.15);
+}
+
+.tile-status.offline {
+  color: var(--danger);
+  background: rgba(255, 77, 79, 0.15);
+}
+
+.tile-status.loading,
+.tile-status.degraded {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.18);
+}
+
+.tile-viewport {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #070c16;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.viewport-placeholder {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.grid-pattern {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(rgba(0, 209, 255, 0.03) 1px, transparent 1px) 0 0 / 20px 20px,
+    linear-gradient(90deg, rgba(0, 209, 255, 0.03) 1px, transparent 1px) 0 0 / 20px 20px;
+  opacity: 0.6;
+}
+
+.camera-icon {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  color: var(--accent);
+  opacity: 0.4;
+  z-index: 1;
+}
+
+.tile-footer {
+  padding: 8px 10px;
+  background: rgba(13, 21, 36, 0.6);
+  border-top: 1px solid var(--border);
+}
+
+.tile-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tile-location {
+  font-size: 11px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Pulse animation for degraded/loading state */
+.camera-tile[data-status="loading"] .camera-icon,
+.camera-tile[data-status="degraded"] .camera-icon {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* T6: Live stream viewport styles */
+.viewport-live {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+
+.live-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.stream-attribution {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(0, 0, 0, 0.6);
+  padding: 3px 6px;
+  border-radius: 3px;
+  backdrop-filter: blur(4px);
+  letter-spacing: 0.03em;
+}
+
+.snapshot-observability {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+}
+
+.snapshot-observability.placeholder-mode {
+  top: auto;
+  bottom: 26px;
+}
+
+.cadence-pill,
+.updated-pill,
+.fallback-pill,
+.relay-pill {
+  font-size: 9px;
+  color: #d7e4ff;
+  background: rgba(0, 0, 0, 0.62);
+  border: 1px solid rgba(0, 209, 255, 0.35);
+  border-radius: 4px;
+  padding: 2px 6px;
+  letter-spacing: 0.03em;
+}
+
+.fallback-pill {
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.relay-pill {
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.4);
+}
+
+.stream-type-badge {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 3px 5px;
+  border-radius: 3px;
+  background: rgba(0, 209, 255, 0.2);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}

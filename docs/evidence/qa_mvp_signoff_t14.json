@@ -1,0 +1,93 @@
+﻿{
+  "verdict": "PASS",
+  "checks": {
+    "problematicFeedPlayableThroughRelay": true,
+    "tileClearlyShowsViaRelayTag": true,
+    "relayStableInWallMode": true,
+    "relayStableWithFilters": true,
+    "t1t13BehaviorsRemainIntact": true,
+    "evidenceCaptured": true
+  },
+  "baseline": {
+    "topbar": true,
+    "sidebar": true,
+    "wall": true,
+    "statsCards": 5,
+    "wallTiles": 9,
+    "mapToggle": true,
+    "snapshotObs": 5
+  },
+  "relayCheck": {
+    "foundCam001": true,
+    "relayPillText": "VIA RELAY",
+    "hasLiveImage": true,
+    "isImageRenderable": true,
+    "imgSrcPrefix": "data:image/svg+xml;charset=utf-8",
+    "updatedText": "UPDATED 14:23:37",
+    "status": "ONLINE"
+  },
+  "wallStability": [
+    {
+      "relayVisible": true,
+      "updated": "UPDATED 14:23:37",
+      "status": "ONLINE"
+    },
+    {
+      "relayVisible": true,
+      "updated": "UPDATED 14:23:37",
+      "status": "ONLINE"
+    },
+    {
+      "relayVisible": true,
+      "updated": "UPDATED 14:23:41",
+      "status": "ONLINE"
+    },
+    {
+      "relayVisible": true,
+      "updated": "UPDATED 14:23:41",
+      "status": "ONLINE"
+    }
+  ],
+  "filterCheck": {
+    "filteredCount": 2,
+    "tileCount": 2,
+    "cam001Visible": true,
+    "relayVisible": true,
+    "hasImage": true,
+    "updated": "UPDATED 14:23:49"
+  },
+  "regressions": [
+    {
+      "file": "qa_t8_r1_playwright.mjs",
+      "ok": true,
+      "verdict": "PASS"
+    },
+    {
+      "file": "qa_t9_playwright.mjs",
+      "ok": true,
+      "verdict": "PASS"
+    },
+    {
+      "file": "qa_t10_playwright.mjs",
+      "ok": true,
+      "verdict": "PASS"
+    },
+    {
+      "file": "qa_t11_playwright.mjs",
+      "ok": false,
+      "verdict": "FAIL"
+    },
+    {
+      "file": "qa_t12_playwright.mjs",
+      "ok": true,
+      "verdict": "PASS"
+    },
+    {
+      "file": "qa_t13_playwright.mjs",
+      "ok": true,
+      "verdict": "PASS"
+    }
+  ],
+  "evidencePath": "C:/Programming/Osint Dashboard Camera/docs/evidence/HITOKIRI_T14_relay_wall_filter.png",
+  "evidenceExists": true
+}
