@@ -1,6 +1,7 @@
 // Malaysia Camera Metadata Dataset
 // Task T3 - Structured camera records with complete metadata
 // Task T6 - Added stream_type, stream_url, and source fields for live feeds
+import { MYSGROAD_CAMERA_CATALOG } from './mysgroadCatalog'
 
 export interface CameraMetadata {
   id: string
@@ -23,20 +24,26 @@ export interface CameraMetadata {
   source_site?: string
   source_group?: string
   network_code?: string
+  view_hint?: string
 }
 
-interface MySGRoadSingaporeRouteConfig {
-  slug: string
-  area: string
+interface HbcCameraConfig {
+  id: string
   name: string
-  networkCode: string
-  pagePath: string
-  count: number
+  state: string
+  area: string
   category: string
   purpose: string
+  lat?: number
+  lon?: number
+  streamUrl: string
+  pageSlug: string
+  sourceGroup: string
+  viewHint: string
 }
 
 const MYSGROAD_REFRESH_MS = 60000
+const HBC_REFRESH_MS = 60000
 
 const MYSGROAD_ROUTE_PAGES: Record<string, string> = {
   BES: '/proxy/mysgroad/traffic-cam/highway-bes',
@@ -72,26 +79,6 @@ const MYSGROAD_ROUTE_PAGES: Record<string, string> = {
   SGP_TUAS: '/proxy/mysgroad/tuas-checkpoint',
   SGP_WOODLANDS: '/proxy/mysgroad/woodlands-checkpoint',
 }
-
-const SINGAPORE_MYSGROAD_ROUTES: MySGRoadSingaporeRouteConfig[] = [
-  { slug: 'sg-woodlands', area: 'Woodlands Checkpoint', name: 'Woodlands Checkpoint', networkCode: 'SGP_WOODLANDS', pagePath: '/proxy/mysgroad/woodlands-checkpoint', count: 5, category: 'checkpoint', purpose: 'checkpoint' },
-  { slug: 'sg-tuas', area: 'Tuas Checkpoint', name: 'Tuas Checkpoint', networkCode: 'SGP_TUAS', pagePath: '/proxy/mysgroad/tuas-checkpoint', count: 6, category: 'checkpoint', purpose: 'checkpoint' },
-  { slug: 'sg-aye', area: 'Ayer Rajah Expressway', name: 'Ayer Rajah Expressway', networkCode: 'SGP_AYE', pagePath: '/proxy/mysgroad/traffic-cam/sg-aye', count: 12, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-bke', area: 'Bukit Timah Expressway', name: 'Bukit Timah Expressway', networkCode: 'SGP_BKE', pagePath: '/proxy/mysgroad/traffic-cam/sg-bke', count: 6, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-cte', area: 'Central Expressway', name: 'Central Expressway', networkCode: 'SGP_CTE', pagePath: '/proxy/mysgroad/traffic-cam/sg-cte', count: 9, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-ecp', area: 'East Coast Parkway', name: 'East Coast Parkway', networkCode: 'SGP_ECP', pagePath: '/proxy/mysgroad/traffic-cam/sg-ecp', count: 8, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-kje', area: 'Kranji Expressway', name: 'Kranji Expressway', networkCode: 'SGP_KJE', pagePath: '/proxy/mysgroad/traffic-cam/sg-kje', count: 4, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-kpe', area: 'Kallang-Paya Lebar Expressway', name: 'Kallang-Paya Lebar Expressway', networkCode: 'SGP_KPE', pagePath: '/proxy/mysgroad/traffic-cam/sg-kpe', count: 6, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-la', area: 'Loyang Ave / Tanah Merah Coast Road', name: 'Loyang Ave / Tanah Merah Coast Road', networkCode: 'SGP_LA', pagePath: '/proxy/mysgroad/traffic-cam/sg-la', count: 3, category: 'street', purpose: 'street' },
-  { slug: 'sg-mce', area: 'Marina Coastal Expressway', name: 'Marina Coastal Expressway', networkCode: 'SGP_MCE', pagePath: '/proxy/mysgroad/traffic-cam/sg-mce', count: 5, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-pie', area: 'Pan-Island Expressway', name: 'Pan-Island Expressway', networkCode: 'SGP_PIE', pagePath: '/proxy/mysgroad/traffic-cam/sg-pie', count: 18, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-sle', area: 'Seletar Expressway', name: 'Seletar Expressway', networkCode: 'SGP_SLE', pagePath: '/proxy/mysgroad/traffic-cam/sg-sle', count: 6, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-tpe', area: 'Tampines Expressway', name: 'Tampines Expressway', networkCode: 'SGP_TPE', pagePath: '/proxy/mysgroad/traffic-cam/sg-tpe', count: 7, category: 'highway', purpose: 'highway' },
-  { slug: 'sg-sentosa', area: 'Sentosa Gateway', name: 'Sentosa Gateway', networkCode: 'SGP_SENTOSA', pagePath: '/proxy/mysgroad/traffic-cam/sg-sentosa', count: 2, category: 'landmark', purpose: 'landmark' },
-]
-
-const buildMySGRoadPlaceholderImageUrl = (slug: string, cameraNumber: number): string =>
-  `https://www.mysgroad.com/placeholder/${slug}/${slug}-traffic-camera-${cameraNumber}-0.jpg`
 
 const resolvePublicProxyUrl = (url?: string): string | undefined => {
   if (!url) return undefined
@@ -142,37 +129,284 @@ const resolveSourceUrl = (camera: CameraMetadata): string | undefined => {
   return resolvePublicProxyUrl(camera.stream_relay_url) ?? resolvePublicProxyUrl(camera.stream_url)
 }
 
-const buildSingaporeMySGRoadCameras = (): CameraMetadata[] => {
-  let cursor = 1
+const LEGACY_MYSGROAD_CAMERA_IDS = new Set([
+  'CAM004',
+  'CAM005',
+  'CAM006',
+  'CAM007',
+  'CAM008',
+  'CAM009',
+  'CAM010',
+  'CAM011',
+  'CAM012',
+  'CAM013',
+  'CAM014',
+  'CAM015',
+  'CAM016',
+  'CAM017',
+  'CAM018',
+  'CAM019',
+  'CAM020',
+  'CAM021',
+  'CAM022',
+])
 
-  return SINGAPORE_MYSGROAD_ROUTES.flatMap((route) =>
-    Array.from({ length: route.count }, (_, index) => {
-      const cameraNumber = index + 1
-      const id = `SGP${String(cursor).padStart(3, '0')}`
-      cursor += 1
+const buildMySGRoadCatalogCameras = (): CameraMetadata[] =>
+  MYSGROAD_CAMERA_CATALOG.map((camera) => ({
+    id: camera.id,
+    name: camera.name,
+    country: camera.country,
+    state: camera.state,
+    area: camera.area,
+    category: camera.category,
+    purpose: camera.purpose,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    stream_url: camera.imageUrl,
+    stream_relay_url: camera.relayPath,
+    update_rate_ms: MYSGROAD_REFRESH_MS,
+    source: 'mySGRoad public traffic camera snapshot',
+    source_site: 'mySGRoad',
+    source_group: camera.sourceGroup,
+    network_code: camera.networkCode,
+  }))
 
-      return {
-        id,
-        name: `${route.name} Camera ${String(cameraNumber).padStart(2, '0')}`,
-        country: 'Singapore',
-        state: 'Singapore',
-        area: route.area,
-        category: route.category,
-        purpose: route.purpose,
-        status: 'online',
-        stream_type: 'snapshot',
-        feed_kind: 'snapshot',
-        stream_url: buildMySGRoadPlaceholderImageUrl(route.slug, cameraNumber),
-        stream_relay_url: route.pagePath,
-        update_rate_ms: MYSGROAD_REFRESH_MS,
-        source: 'mySGRoad public Singapore traffic camera snapshot',
-        source_site: 'mySGRoad',
-        source_group: 'Singapore',
-        network_code: route.networkCode,
-      }
-    })
-  )
-}
+const ADDITIONAL_HBC_CAMERAS: HbcCameraConfig[] = [
+  {
+    id: 'JPN024',
+    name: 'Shin-Chitose Airport Snapshot',
+    state: 'Hokkaido',
+    area: 'Shin-Chitose Airport',
+    category: 'transport',
+    purpose: 'transport',
+    lat: 42.7752,
+    lon: 141.6923,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/chitosehd_720.jpg',
+    pageSlug: 'shinchitose',
+    sourceGroup: 'Hokkaido Transport',
+    viewHint: 'Airport district and apron-facing view',
+  },
+  {
+    id: 'JPN025',
+    name: 'Obihiro City Snapshot',
+    state: 'Hokkaido',
+    area: 'Obihiro',
+    category: 'city',
+    purpose: 'street',
+    lat: 42.9239,
+    lon: 143.1965,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/obihirohd_720.jpg',
+    pageSlug: 'obihiro',
+    sourceGroup: 'Hokkaido Cities',
+    viewHint: 'City-center skyline',
+  },
+  {
+    id: 'JPN026',
+    name: 'Tomakomai City Snapshot',
+    state: 'Hokkaido',
+    area: 'Tomakomai',
+    category: 'city',
+    purpose: 'street',
+    lat: 42.6343,
+    lon: 141.6055,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/tomakomaihd_720.jpg',
+    pageSlug: 'tomakomai',
+    sourceGroup: 'Hokkaido Cities',
+    viewHint: 'Port city skyline',
+  },
+  {
+    id: 'JPN027',
+    name: 'Nakayama Pass Snapshot',
+    state: 'Hokkaido',
+    area: 'Nakayama Pass',
+    category: 'highway',
+    purpose: 'highway',
+    lat: 42.8466,
+    lon: 141.1452,
+    streamUrl: 'https://www.hbc.co.jp/weather/roadcamera/current/picture/970000000520.jpg',
+    pageSlug: 'nakayama',
+    sourceGroup: 'Hokkaido Nature',
+    viewHint: 'Mountain pass road camera',
+  },
+  {
+    id: 'JPN028',
+    name: 'Hiroo Snapshot',
+    state: 'Hokkaido',
+    area: 'Hiroo',
+    category: 'city',
+    purpose: 'street',
+    lat: 42.289,
+    lon: 143.3127,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/hiroohd_720.jpg',
+    pageSlug: 'hiroo',
+    sourceGroup: 'Hokkaido Coast',
+    viewHint: 'Coastal town view',
+  },
+  {
+    id: 'JPN029',
+    name: 'Hamanaka Wetland Center Snapshot',
+    state: 'Hokkaido',
+    area: 'Kiritappu Wetland Center',
+    category: 'nature',
+    purpose: 'landmark',
+    lat: 43.0779,
+    lon: 145.1211,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media2/shitsugen.jpg',
+    pageSlug: 'hamanaka',
+    sourceGroup: 'Hokkaido Nature',
+    viewHint: 'Wetland and marshland view',
+  },
+  {
+    id: 'JPN030',
+    name: 'Hamanaka Biwase Snapshot',
+    state: 'Hokkaido',
+    area: 'Biwase',
+    category: 'nature',
+    purpose: 'landmark',
+    lat: 43.085,
+    lon: 145.081,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media2/kiritappu.jpg',
+    pageSlug: 'hamanakabiwase',
+    sourceGroup: 'Hokkaido Nature',
+    viewHint: 'Coastal marsh and bay view',
+  },
+  {
+    id: 'JPN031',
+    name: 'Rumoi Snapshot',
+    state: 'Hokkaido',
+    area: 'Rumoi',
+    category: 'city',
+    purpose: 'street',
+    lat: 43.9343,
+    lon: 141.6424,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/rumoihd_720.jpg',
+    pageSlug: 'rumoi',
+    sourceGroup: 'Hokkaido Coast',
+    viewHint: 'Coastal city view',
+  },
+  {
+    id: 'JPN032',
+    name: 'Esashi Snapshot',
+    state: 'Hokkaido',
+    area: 'Esashi',
+    category: 'city',
+    purpose: 'street',
+    lat: 41.8694,
+    lon: 140.1278,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/esashihd_720.jpg',
+    pageSlug: 'esashi',
+    sourceGroup: 'Hokkaido Coast',
+    viewHint: 'Historic coastal town view',
+  },
+  {
+    id: 'JPN033',
+    name: 'Kushiro Snapshot',
+    state: 'Hokkaido',
+    area: 'Kushiro',
+    category: 'city',
+    purpose: 'street',
+    lat: 42.9849,
+    lon: 144.3814,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/kushirohd_720.jpg',
+    pageSlug: 'kushiro',
+    sourceGroup: 'Hokkaido Cities',
+    viewHint: 'Port city skyline',
+  },
+  {
+    id: 'JPN034',
+    name: 'Utoro Snapshot',
+    state: 'Hokkaido',
+    area: 'Utoro',
+    category: 'nature',
+    purpose: 'landmark',
+    lat: 44.0622,
+    lon: 144.9994,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/utorohd_720.jpg',
+    pageSlug: 'utoro',
+    sourceGroup: 'Hokkaido Coast',
+    viewHint: 'Shiretoko coast view',
+  },
+  {
+    id: 'JPN035',
+    name: 'Iwamizawa Snapshot',
+    state: 'Hokkaido',
+    area: 'Iwamizawa',
+    category: 'city',
+    purpose: 'street',
+    lat: 43.1962,
+    lon: 141.7597,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/iwamizawahd_720.jpg',
+    pageSlug: 'iwamizawa',
+    sourceGroup: 'Hokkaido Cities',
+    viewHint: 'Inland city-center view',
+  },
+  {
+    id: 'JPN036',
+    name: 'Muroran Snapshot',
+    state: 'Hokkaido',
+    area: 'Muroran',
+    category: 'city',
+    purpose: 'street',
+    lat: 42.3152,
+    lon: 140.9738,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/muroranhd_720.jpg',
+    pageSlug: 'muroran',
+    sourceGroup: 'Hokkaido Coast',
+    viewHint: 'Harbor city skyline',
+  },
+  {
+    id: 'JPN037',
+    name: 'Wakkanai Snapshot',
+    state: 'Hokkaido',
+    area: 'Wakkanai',
+    category: 'city',
+    purpose: 'street',
+    lat: 45.4156,
+    lon: 141.673,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/wakkanaihd_720.jpg',
+    pageSlug: 'wakkanai',
+    sourceGroup: 'Hokkaido Coast',
+    viewHint: 'Northern coastal city view',
+  },
+  {
+    id: 'JPN038',
+    name: 'Nemuro Snapshot',
+    state: 'Hokkaido',
+    area: 'Nemuro',
+    category: 'city',
+    purpose: 'street',
+    lat: 43.3301,
+    lon: 145.5828,
+    streamUrl: 'https://www.hbc.co.jp/info-cam/media/nemurohd_720.jpg',
+    pageSlug: 'nemuro',
+    sourceGroup: 'Hokkaido Coast',
+    viewHint: 'Far east coastal city view',
+  },
+]
+
+const buildAdditionalHbcCameras = (): CameraMetadata[] =>
+  ADDITIONAL_HBC_CAMERAS.map((camera) => ({
+    id: camera.id,
+    name: camera.name,
+    country: 'Japan',
+    state: camera.state,
+    area: camera.area,
+    category: camera.category,
+    purpose: camera.purpose,
+    lat: camera.lat,
+    lon: camera.lon,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: HBC_REFRESH_MS,
+    stream_url: camera.streamUrl,
+    source: 'HBC current-image snapshot',
+    source_url: `https://www.hbc.co.jp/info-cam/${camera.pageSlug}.html`,
+    source_site: 'HBC Info Cam',
+    source_group: camera.sourceGroup,
+    view_hint: camera.viewHint,
+  }))
 
 const baseCamerasDataset: CameraMetadata[] = [
   // Kuala Lumpur
@@ -584,7 +818,8 @@ const baseCamerasDataset: CameraMetadata[] = [
     stream_url: '/proxy/fujinomiya/10photo/new.jpg',
     source: 'Fujinomiya City official current-image snapshot',
     source_site: 'Fujinomiya Camera',
-    source_group: 'Mount Fuji'
+    source_group: 'Mount Fuji',
+    view_hint: 'Southwest side of Mount Fuji'
   },
   {
     id: 'JPN004',
@@ -603,7 +838,9 @@ const baseCamerasDataset: CameraMetadata[] = [
     stream_url: '/proxy/fujisabo/fujisabo/camera/images/00045.jpg',
     source: 'Fuji Sabo official auto-refreshing snapshot',
     source_site: 'Fuji Sabo',
-    source_group: 'Mount Fuji'
+    source_group: 'Mount Fuji',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv_h264.html?cctv=f45&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
+    view_hint: 'East-southeast side of Mount Fuji'
   },
 
   // Japan - Additional Mount Fuji snapshots
@@ -624,7 +861,9 @@ const baseCamerasDataset: CameraMetadata[] = [
     stream_url: '/proxy/fujisabo/fujisabo/camera/images/00024.jpg',
     source: 'Fuji Sabo official auto-refreshing snapshot',
     source_site: 'Fuji Sabo',
-    source_group: 'Mount Fuji'
+    source_group: 'Mount Fuji',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv.html?cctv=f24&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
+    view_hint: 'South-southwest side of Mount Fuji'
   },
   {
     id: 'JPN009',
@@ -634,14 +873,18 @@ const baseCamerasDataset: CameraMetadata[] = [
     area: 'Asagiri',
     category: 'nature',
     purpose: 'landmark',
+    lat: 35.4215,
+    lon: 138.5657,
     status: 'online',
-    stream_type: 'embed',
+    stream_type: 'snapshot',
     feed_kind: 'snapshot',
-    stream_url: '/proxy/fujisabo/fujisabo/en/camera/cctv_h264.html?area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2&cctv=f23',
+    stream_url: '/proxy/fujisabo/fujisabo/camera/images/00023.jpg',
     update_rate_ms: 600000,
-    source: 'Fuji Sabo official snapshot viewer (auto-updates every 10 minutes)',
+    source: 'Fuji Sabo official auto-refreshing snapshot',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv_h264.html?cctv=f23&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
     source_site: 'Fuji Sabo',
-    source_group: 'Mount Fuji'
+    source_group: 'Mount Fuji',
+    view_hint: 'West-northwest side of Mount Fuji'
   },
   {
     id: 'JPN010',
@@ -651,14 +894,18 @@ const baseCamerasDataset: CameraMetadata[] = [
     area: 'Tenshigatake',
     category: 'nature',
     purpose: 'landmark',
+    lat: 35.3240,
+    lon: 138.5670,
     status: 'online',
-    stream_type: 'embed',
+    stream_type: 'snapshot',
     feed_kind: 'snapshot',
-    stream_url: '/proxy/fujisabo/fujisabo/en/camera/cctv_h264.html?area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2&cctv=f26',
+    stream_url: '/proxy/fujisabo/fujisabo/camera/images/00026.jpg',
     update_rate_ms: 600000,
-    source: 'Fuji Sabo official snapshot viewer (auto-updates every 10 minutes)',
+    source: 'Fuji Sabo official auto-refreshing snapshot',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv_h264.html?cctv=f26&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
     source_site: 'Fuji Sabo',
-    source_group: 'Mount Fuji'
+    source_group: 'Mount Fuji',
+    view_hint: 'West-southwest side of Mount Fuji'
   },
   {
     id: 'JPN011',
@@ -668,14 +915,18 @@ const baseCamerasDataset: CameraMetadata[] = [
     area: 'Hakoarasawa',
     category: 'nature',
     purpose: 'landmark',
+    lat: 35.2850,
+    lon: 138.6450,
     status: 'online',
-    stream_type: 'embed',
+    stream_type: 'snapshot',
     feed_kind: 'snapshot',
-    stream_url: '/proxy/fujisabo/fujisabo/en/camera/cctv_h264.html?area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2&cctv=f27',
+    stream_url: '/proxy/fujisabo/fujisabo/camera/images/00027.jpg',
     update_rate_ms: 600000,
-    source: 'Fuji Sabo official snapshot viewer (auto-updates every 10 minutes)',
+    source: 'Fuji Sabo official auto-refreshing snapshot',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv_h264.html?cctv=f27&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
     source_site: 'Fuji Sabo',
-    source_group: 'Mount Fuji'
+    source_group: 'Mount Fuji',
+    view_hint: 'Southwest side of Mount Fuji'
   },
   {
     id: 'JPN012',
@@ -685,20 +936,256 @@ const baseCamerasDataset: CameraMetadata[] = [
     area: 'Yui Satta Pass',
     category: 'nature',
     purpose: 'landmark',
+    lat: 35.1062,
+    lon: 138.5111,
     status: 'online',
-    stream_type: 'embed',
+    stream_type: 'snapshot',
     feed_kind: 'snapshot',
-    stream_url: '/proxy/fujisabo/fujisabo/en/camera/cctv_h264.html?area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2&cctv=f33',
+    stream_url: '/proxy/fujisabo/fujisabo/camera/images/00033.jpg',
     update_rate_ms: 600000,
-    source: 'Fuji Sabo official snapshot viewer (auto-updates every 10 minutes)',
+    source: 'Fuji Sabo official auto-refreshing snapshot',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv_h264.html?cctv=f33&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
     source_site: 'Fuji Sabo',
-    source_group: 'Mount Fuji'
+    source_group: 'Mount Fuji',
+    view_hint: 'Far south-southwest view across Suruga Bay'
+  },
+  {
+    id: 'JPN020',
+    name: 'Mount Fuji - Taroubo Snapshot',
+    country: 'Japan',
+    state: 'Shizuoka',
+    area: 'Taroubo',
+    category: 'nature',
+    purpose: 'landmark',
+    lat: 35.2920,
+    lon: 138.8080,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 600000,
+    stream_url: '/proxy/fujisabo/fujisabo/camera/images/00032.jpg',
+    source: 'Fuji Sabo official auto-refreshing snapshot',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv_h264.html?cctv=f32&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
+    source_site: 'Fuji Sabo',
+    source_group: 'Mount Fuji',
+    view_hint: 'East-southeast side of Mount Fuji'
+  },
+  {
+    id: 'JPN021',
+    name: 'Mount Fuji - Katafutayama Snapshot',
+    country: 'Japan',
+    state: 'Shizuoka',
+    area: 'Katafutayama',
+    category: 'nature',
+    purpose: 'landmark',
+    lat: 35.2510,
+    lon: 138.7890,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 600000,
+    stream_url: '/proxy/fujisabo/fujisabo/camera/images/00039.jpg',
+    source: 'Fuji Sabo official auto-refreshing snapshot',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv_h264.html?cctv=f39&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
+    source_site: 'Fuji Sabo',
+    source_group: 'Mount Fuji',
+    view_hint: 'Southeast side of Mount Fuji'
+  },
+  {
+    id: 'JPN022',
+    name: 'Mount Fuji - Fuji Sabo Office Snapshot',
+    country: 'Japan',
+    state: 'Shizuoka',
+    area: 'Fuji Sabo Office',
+    category: 'nature',
+    purpose: 'landmark',
+    lat: 35.2290,
+    lon: 138.6200,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 600000,
+    stream_url: '/proxy/fujisabo/fujisabo/camera/images/00030.jpg',
+    source: 'Fuji Sabo official auto-refreshing snapshot',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv_h264.html?cctv=f30&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
+    source_site: 'Fuji Sabo',
+    source_group: 'Mount Fuji',
+    view_hint: 'Southwest foothills view of Mount Fuji'
+  },
+  {
+    id: 'JPN023',
+    name: 'Mount Fuji - Sekotsuji Snapshot',
+    country: 'Japan',
+    state: 'Shizuoka',
+    area: 'Sekotsuji',
+    category: 'nature',
+    purpose: 'landmark',
+    lat: 35.2350,
+    lon: 138.7800,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 600000,
+    stream_url: '/proxy/fujisabo/fujisabo/camera/images/00025.jpg',
+    source: 'Fuji Sabo official auto-refreshing snapshot',
+    source_url: 'https://www.cbr.mlit.go.jp/fujisabo/en/camera/cctv_h264.html?cctv=f25&area=%E5%AF%8C%E5%A3%AB%E7%A0%82%E9%98%B2',
+    source_site: 'Fuji Sabo',
+    source_group: 'Mount Fuji',
+    view_hint: 'South-southeast foothills view of Mount Fuji'
+  },
+  {
+    id: 'JPN013',
+    name: 'Central Sapporo City Snapshot',
+    country: 'Japan',
+    state: 'Hokkaido',
+    area: 'Sapporo',
+    category: 'city',
+    purpose: 'street',
+    lat: 43.0618,
+    lon: 141.3545,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 60000,
+    stream_url: 'https://www.hbc.co.jp/info-cam/media/sapporohd_720.jpg',
+    source: 'HBC current city-center snapshot',
+    source_url: 'https://www.hbc.co.jp/info-cam/sapporo.html',
+    source_site: 'HBC Info Cam',
+    source_group: 'Hokkaido Cities',
+    view_hint: 'Central city skyline'
+  },
+  {
+    id: 'JPN014',
+    name: 'JR Sapporo Station Snapshot',
+    country: 'Japan',
+    state: 'Hokkaido',
+    area: 'Sapporo',
+    category: 'city',
+    purpose: 'transport',
+    lat: 43.0687,
+    lon: 141.3508,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 60000,
+    stream_url: 'https://www.hbc.co.jp/info-cam/media/jrsapporohd_720.jpg',
+    source: 'HBC current station-district snapshot',
+    source_url: 'https://www.hbc.co.jp/info-cam/jrsapporosta.html',
+    source_site: 'HBC Info Cam',
+    source_group: 'Hokkaido Cities',
+    view_hint: 'Station district view'
+  },
+  {
+    id: 'JPN015',
+    name: 'Hakodate City Snapshot',
+    country: 'Japan',
+    state: 'Hokkaido',
+    area: 'Hakodate',
+    category: 'city',
+    purpose: 'street',
+    lat: 41.7688,
+    lon: 140.7288,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 60000,
+    stream_url: 'https://www.hbc.co.jp/info-cam/media/hakodatehd_720.jpg',
+    source: 'HBC current city-center snapshot',
+    source_url: 'https://www.hbc.co.jp/info-cam/hakodate.html',
+    source_site: 'HBC Info Cam',
+    source_group: 'Hokkaido Cities',
+    view_hint: 'City-center skyline'
+  },
+  {
+    id: 'JPN016',
+    name: 'Otaru City Snapshot',
+    country: 'Japan',
+    state: 'Hokkaido',
+    area: 'Otaru',
+    category: 'city',
+    purpose: 'street',
+    lat: 43.1907,
+    lon: 140.9947,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 60000,
+    stream_url: 'https://www.hbc.co.jp/info-cam/media/otaruhd_720.jpg',
+    source: 'HBC current city-center snapshot',
+    source_url: 'https://www.hbc.co.jp/info-cam/otaru.html',
+    source_site: 'HBC Info Cam',
+    source_group: 'Hokkaido Cities',
+    view_hint: 'City-center skyline'
+  },
+  {
+    id: 'JPN017',
+    name: 'Asahikawa City Snapshot',
+    country: 'Japan',
+    state: 'Hokkaido',
+    area: 'Asahikawa',
+    category: 'city',
+    purpose: 'street',
+    lat: 43.7706,
+    lon: 142.3649,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 60000,
+    stream_url: 'https://www.hbc.co.jp/info-cam/media/asahikawahd_720.jpg',
+    source: 'HBC current city-center snapshot',
+    source_url: 'https://www.hbc.co.jp/info-cam/asahikawa.html',
+    source_site: 'HBC Info Cam',
+    source_group: 'Hokkaido Cities',
+    view_hint: 'City-center skyline'
+  },
+  {
+    id: 'JPN018',
+    name: 'Sendai Mediatheque Snapshot A',
+    country: 'Japan',
+    state: 'Miyagi',
+    area: 'Sendai',
+    category: 'city',
+    purpose: 'landmark',
+    lat: 38.2647,
+    lon: 140.8670,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 60000,
+    stream_url: 'https://www.smt.jp/livecam/motion_a',
+    source: 'Sendai Mediatheque current city snapshot',
+    source_url: 'https://www.smt.jp/livecam/index_en.html',
+    source_site: 'Sendai Mediatheque',
+    source_group: 'Sendai',
+    view_hint: 'Downtown landmark-facing view'
+  },
+  {
+    id: 'JPN019',
+    name: 'Sendai Mediatheque Snapshot B',
+    country: 'Japan',
+    state: 'Miyagi',
+    area: 'Sendai',
+    category: 'city',
+    purpose: 'street',
+    lat: 38.2647,
+    lon: 140.8670,
+    status: 'online',
+    stream_type: 'snapshot',
+    feed_kind: 'snapshot',
+    update_rate_ms: 60000,
+    stream_url: 'https://www.smt.jp/livecam/motion_b',
+    source: 'Sendai Mediatheque current street snapshot',
+    source_url: 'https://www.smt.jp/livecam/index_en.html',
+    source_site: 'Sendai Mediatheque',
+    source_group: 'Sendai',
+    view_hint: 'Downtown street view'
   }
 ]
 
 export const malaysiaCamerasDataset: CameraMetadata[] = [
-  ...baseCamerasDataset,
-  ...buildSingaporeMySGRoadCameras(),
+  ...baseCamerasDataset.filter((camera) => !LEGACY_MYSGROAD_CAMERA_IDS.has(camera.id)),
+  ...buildAdditionalHbcCameras(),
+  ...buildMySGRoadCatalogCameras(),
 ].map((camera) => {
   const normalizedCamera = camera.source_site === 'mySGRoad'
     ? {

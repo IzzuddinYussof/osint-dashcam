@@ -1,5 +1,6 @@
 import './CameraTile.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Capacitor, CapacitorHttp } from '@capacitor/core'
 import Hls from 'hls.js'
 
 interface CameraTileProps {
@@ -45,7 +46,37 @@ function formatRefreshInterval(refreshIntervalMs: number): string {
 }
 
 function isMySGRoadBridge(url?: string): boolean {
-  return typeof url === 'string' && url.startsWith('/proxy/mysgroad/')
+  return typeof url === 'string' && (
+    url.startsWith('/proxy/mysgroad/') ||
+    url.startsWith('https://www.mysgroad.com/')
+  )
+}
+
+function resolvePublicProxyUrl(url?: string): string | undefined {
+  if (!url) return undefined
+
+  if (url.startsWith('/proxy/klccc/')) {
+    return `https://klccc.dbkl.gov.my/${url.slice('/proxy/klccc/'.length)}`
+  }
+
+  if (url.startsWith('/proxy/fujinomiya/')) {
+    return `https://www.fujinomiya-camera.jp/${url.slice('/proxy/fujinomiya/'.length)}`
+  }
+
+  if (url.startsWith('/proxy/fujisabo/')) {
+    return `https://www.cbr.mlit.go.jp/${url.slice('/proxy/fujisabo/'.length)}`
+  }
+
+  if (url.startsWith('/proxy/mysgroad/')) {
+    return `https://www.mysgroad.com${url.slice('/proxy/mysgroad'.length)}`
+  }
+
+  return undefined
+}
+
+function resolveRuntimeUrl(url?: string): string | undefined {
+  if (!url) return undefined
+  return Capacitor.isNativePlatform() ? (resolvePublicProxyUrl(url) ?? url) : url
 }
 
 function getMySGRoadCameraPrefix(streamUrl: string): string | null {
@@ -58,18 +89,37 @@ async function resolveMySGRoadSnapshotUrl(pageUrl: string, currentImageUrl: stri
   const prefix = getMySGRoadCameraPrefix(currentImageUrl)
   if (!prefix) return null
 
-  const response = await fetch(pageUrl, {
-    credentials: 'same-origin',
-    headers: {
-      accept: 'text/html,application/xhtml+xml',
-    },
-  })
+  const resolvedPageUrl = resolveRuntimeUrl(pageUrl) ?? pageUrl
+  let html = ''
 
-  if (!response.ok) {
-    throw new Error(`Failed to load route page: ${response.status}`)
+  if (Capacitor.isNativePlatform() && /^https?:\/\//i.test(resolvedPageUrl)) {
+    const response = await CapacitorHttp.get({
+      url: resolvedPageUrl,
+      headers: {
+        accept: 'text/html,application/xhtml+xml',
+      },
+    })
+
+    if (response.status >= 400) {
+      throw new Error(`Failed to load route page: ${response.status}`)
+    }
+
+    html = typeof response.data === 'string' ? response.data : JSON.stringify(response.data)
+  } else {
+    const response = await fetch(resolvedPageUrl, {
+      credentials: 'same-origin',
+      headers: {
+        accept: 'text/html,application/xhtml+xml',
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(`Failed to load route page: ${response.status}`)
+    }
+
+    html = await response.text()
   }
 
-  const html = await response.text()
   const regex = /(?:https:\/\/www\.mysgroad\.com)?(\/sites\/mysgroad\/files\/img\/[^"' ]+?\.jpg)/gi
   let match: RegExpExecArray | null
 
@@ -160,11 +210,13 @@ function CameraTile({
   onClick,
   isActive = false
 }: CameraTileProps) {
-  const canUseSnapshot = streamType === 'snapshot' && !!streamUrl
-  const canUseHls = streamType === 'hls' && !!streamUrl
-  const canUseEmbed = streamType === 'embed' && !!streamUrl
+  const runtimeStreamUrl = useMemo(() => resolveRuntimeUrl(streamUrl), [streamUrl])
+  const runtimeRelayUrl = useMemo(() => resolveRuntimeUrl(relayUrl), [relayUrl])
+  const canUseSnapshot = streamType === 'snapshot' && !!runtimeStreamUrl
+  const canUseHls = streamType === 'hls' && !!runtimeStreamUrl
+  const canUseEmbed = streamType === 'embed' && !!runtimeStreamUrl
   const canUseStream = canUseSnapshot || canUseHls || canUseEmbed
-  const isMySGRoadRouteBridge = useMemo(() => isMySGRoadBridge(relayUrl), [relayUrl])
+  const isMySGRoadRouteBridge = useMemo(() => isMySGRoadBridge(runtimeRelayUrl), [runtimeRelayUrl])
   const effectiveRefreshIntervalMs = useMemo(
     () => Math.max(1000, refreshIntervalMs ?? DEFAULT_REFRESH_MS),
     [refreshIntervalMs]
@@ -207,7 +259,7 @@ function CameraTile({
     hasFrameRef.current = false
     failureStreakRef.current = 0
     successStreakRef.current = 0
-    activeStreamRef.current = streamUrl
+    activeStreamRef.current = runtimeStreamUrl ?? ''
     isUsingPageBridgeRef.current = false
 
     const onSuccess = (nextSrc: string) => {
@@ -232,11 +284,11 @@ function CameraTile({
 
       if (
         !hasFrameRef.current &&
-        relayUrl &&
+        runtimeRelayUrl &&
         !isMySGRoadRouteBridge &&
         !activeStreamRef.current.startsWith('relay://')
       ) {
-        activeStreamRef.current = relayUrl
+        activeStreamRef.current = runtimeRelayUrl
         setIsViaRelay(true)
       } else if (!hasFrameRef.current && !activeStreamRef.current.startsWith('local://') && !activeStreamRef.current.startsWith('relay://')) {
         activeStreamRef.current = `local://fallback/${id}`
@@ -270,12 +322,12 @@ function CameraTile({
 
       if (
         isMySGRoadRouteBridge &&
-        relayUrl &&
+        runtimeRelayUrl &&
         !nextStreamUrl.startsWith('local://') &&
         !nextStreamUrl.startsWith('relay://')
       ) {
         try {
-          const latestRouteImageUrl = await resolveMySGRoadSnapshotUrl(relayUrl, nextStreamUrl)
+          const latestRouteImageUrl = await resolveMySGRoadSnapshotUrl(runtimeRelayUrl, nextStreamUrl)
           if (latestRouteImageUrl) {
             nextStreamUrl = latestRouteImageUrl
             activeStreamRef.current = latestRouteImageUrl
@@ -315,8 +367,8 @@ function CameraTile({
 
     firstFrameTimerId = window.setTimeout(() => {
       if (stoppedRef.current || hasFrameRef.current) return
-      if (relayUrl && !activeStreamRef.current.startsWith('relay://')) {
-        activeStreamRef.current = relayUrl
+      if (runtimeRelayUrl && !activeStreamRef.current.startsWith('relay://')) {
+        activeStreamRef.current = runtimeRelayUrl
         setIsViaRelay(true)
       } else if (!activeStreamRef.current.startsWith('local://')) {
         activeStreamRef.current = `local://firstframe/${id}`
@@ -332,10 +384,10 @@ function CameraTile({
       if (retryTimerId) window.clearTimeout(retryTimerId)
       if (intervalId) window.clearInterval(intervalId)
     }
-  }, [canUseSnapshot, effectiveRefreshIntervalMs, id, isMySGRoadRouteBridge, location, name, refreshOffset, streamUrl, relayUrl])
+  }, [canUseSnapshot, effectiveRefreshIntervalMs, id, isMySGRoadRouteBridge, location, name, refreshOffset, runtimeRelayUrl, runtimeStreamUrl, streamUrl])
 
   useEffect(() => {
-    if (!canUseHls || !streamUrl) {
+    if (!canUseHls || !runtimeStreamUrl) {
       return
     }
 
@@ -397,7 +449,7 @@ function CameraTile({
       })
 
       hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-        hls?.loadSource(streamUrl)
+          hls?.loadSource(runtimeStreamUrl)
       })
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -439,7 +491,7 @@ function CameraTile({
 
       hls.attachMedia(video)
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = streamUrl
+      video.src = runtimeStreamUrl
       tryPlay()
     } else {
       markOffline()
@@ -461,7 +513,7 @@ function CameraTile({
         video.load()
       }
     }
-  }, [canUseHls, streamUrl])
+  }, [canUseHls, runtimeStreamUrl])
 
   const tileStatus: HealthState = canUseStream
     ? healthState
@@ -476,11 +528,11 @@ function CameraTile({
     : 'pending'
 
   const renderViewport = () => {
-    if (canUseEmbed && streamUrl) {
+    if (canUseEmbed && runtimeStreamUrl) {
       return (
         <div className="viewport-live">
           <iframe
-            src={streamUrl}
+            src={runtimeStreamUrl}
             title={`Embedded live feed from ${name}`}
             className="live-embed"
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
@@ -563,7 +615,7 @@ function CameraTile({
             {isHidden && <span className="hidden-state-badge">HIDDEN</span>}
           </div>
           <div className="tile-info-right">
-            {streamType !== 'none' && streamUrl && (
+            {streamType !== 'none' && runtimeStreamUrl && (
               <span className="stream-type-badge">{streamType.toUpperCase()}</span>
             )}
             {onToggleHidden && (

@@ -1,6 +1,7 @@
 import './App.css'
 import { useEffect, useMemo, useState } from 'react'
 import CameraTile from './components/CameraTile'
+import CameraMap from './components/CameraMap'
 import { getTotalCameraCount, malaysiaCamerasDataset, type CameraMetadata } from './data/camerasDataset'
 
 const totalCameras = getTotalCameraCount()
@@ -13,6 +14,10 @@ type VisibilityFilter = 'visible' | 'all' | 'hidden'
 type HiddenCameraMap = Record<string, boolean>
 
 const UNTAGGED_FILTER = '__untagged__'
+const DASHBOARD_STATE_STORAGE_KEY = 'osint-dashboard-state-v1'
+const DEFAULT_WALL_PAGE_SIZE = 20
+const MIN_WALL_PAGE_SIZE = 4
+const MAX_WALL_PAGE_SIZE = 100
 
 interface ViewPreset {
   id: string
@@ -29,6 +34,7 @@ interface ViewPreset {
   selectedUserTagFilter: string
   layoutMode: LayoutMode
   viewMode: ViewMode
+  wallPageSize: number
 }
 
 interface CameraFilterState {
@@ -46,11 +52,21 @@ interface CameraFilterState {
   hiddenCameras: HiddenCameraMap
 }
 
-const DEFAULT_MAP_BOUNDS = {
-  minLat: 0.8,
-  maxLat: 47,
-  minLon: 99.6,
-  maxLon: 146,
+interface PersistedDashboardState {
+  selectedCountry: string
+  selectedState: string
+  selectedArea: string
+  selectedPurposes: string[]
+  selectedFeedFilter: FeedFilter
+  selectedVisibilityFilter: VisibilityFilter
+  selectedSourceSite: string
+  selectedSourceGroup: string
+  selectedNetworkCode: string
+  selectedUserTagFilter: string
+  layoutMode: LayoutMode
+  viewMode: ViewMode
+  patrolIntervalSec: number
+  wallPageSize: number
 }
 
 const NETWORK_LABELS: Record<string, string> = {
@@ -96,6 +112,51 @@ const RECOMMENDED_CAMERA_TAGS = [
   'snapshot-only',
   'favorite',
 ]
+
+const clampWallPageSize = (value: number): number => {
+  if (!Number.isFinite(value)) return DEFAULT_WALL_PAGE_SIZE
+  return Math.min(MAX_WALL_PAGE_SIZE, Math.max(MIN_WALL_PAGE_SIZE, Math.round(value)))
+}
+
+const clampPatrolInterval = (value: number): number => {
+  if (!Number.isFinite(value)) return 6
+  return Math.min(30, Math.max(2, Math.round(value)))
+}
+
+const readPersistedDashboardState = (): PersistedDashboardState | null => {
+  try {
+    const raw = window.localStorage.getItem(DASHBOARD_STATE_STORAGE_KEY)
+    if (!raw) return null
+
+    const parsed = JSON.parse(raw) as Partial<PersistedDashboardState>
+    if (!parsed || typeof parsed !== 'object') return null
+
+    return {
+      selectedCountry: typeof parsed.selectedCountry === 'string' ? parsed.selectedCountry : '',
+      selectedState: typeof parsed.selectedState === 'string' ? parsed.selectedState : '',
+      selectedArea: typeof parsed.selectedArea === 'string' ? parsed.selectedArea : '',
+      selectedPurposes: Array.isArray(parsed.selectedPurposes)
+        ? parsed.selectedPurposes.filter((value): value is string => typeof value === 'string')
+        : [],
+      selectedFeedFilter: parsed.selectedFeedFilter === 'live' || parsed.selectedFeedFilter === 'snapshot'
+        ? parsed.selectedFeedFilter
+        : 'all',
+      selectedVisibilityFilter: parsed.selectedVisibilityFilter === 'all' || parsed.selectedVisibilityFilter === 'hidden'
+        ? parsed.selectedVisibilityFilter
+        : 'visible',
+      selectedSourceSite: typeof parsed.selectedSourceSite === 'string' ? parsed.selectedSourceSite : '',
+      selectedSourceGroup: typeof parsed.selectedSourceGroup === 'string' ? parsed.selectedSourceGroup : '',
+      selectedNetworkCode: typeof parsed.selectedNetworkCode === 'string' ? parsed.selectedNetworkCode : '',
+      selectedUserTagFilter: typeof parsed.selectedUserTagFilter === 'string' ? parsed.selectedUserTagFilter : '',
+      layoutMode: parsed.layoutMode === '2x2' || parsed.layoutMode === '4x4' ? parsed.layoutMode : '3x3',
+      viewMode: parsed.viewMode === 'map' ? 'map' : 'wall',
+      patrolIntervalSec: clampPatrolInterval(Number(parsed.patrolIntervalSec)),
+      wallPageSize: clampWallPageSize(Number(parsed.wallPageSize)),
+    }
+  } catch {
+    return null
+  }
+}
 
 const getCameraCountry = (country?: string): string => country ?? 'Malaysia'
 
@@ -147,6 +208,14 @@ const matchesVisibilityFilter = (
   if (selectedVisibilityFilter === 'hidden') return isHidden
   if (selectedVisibilityFilter === 'visible') return !isHidden
   return true
+}
+
+const isMountFujiCamera = (camera: CameraMetadata): boolean => camera.source_group === 'Mount Fuji'
+
+const getMapPreviewSource = (camera: CameraMetadata): string | null => {
+  if (camera.stream_type !== 'snapshot' || !camera.stream_url) return null
+  if (camera.stream_url.startsWith('local://') || camera.stream_url.startsWith('relay://')) return null
+  return camera.stream_url
 }
 
 const filterCameras = ({
@@ -311,16 +380,17 @@ function App() {
   const PRESET_STORAGE_KEY = 'osint-dashboard-view-presets-v4'
   const CAMERA_TAG_STORAGE_KEY = 'osint-dashboard-camera-tags-v1'
   const HIDDEN_CAMERA_STORAGE_KEY = 'osint-dashboard-hidden-cameras-v1'
-  const [selectedCountry, setSelectedCountry] = useState<string>('')
-  const [selectedState, setSelectedState] = useState<string>('')
-  const [selectedArea, setSelectedArea] = useState<string>('')
-  const [selectedPurposes, setSelectedPurposes] = useState<string[]>([])
-  const [selectedFeedFilter, setSelectedFeedFilter] = useState<FeedFilter>('all')
-  const [selectedVisibilityFilter, setSelectedVisibilityFilter] = useState<VisibilityFilter>('visible')
-  const [selectedSourceSite, setSelectedSourceSite] = useState<string>('')
-  const [selectedSourceGroup, setSelectedSourceGroup] = useState<string>('')
-  const [selectedNetworkCode, setSelectedNetworkCode] = useState<string>('')
-  const [selectedUserTagFilter, setSelectedUserTagFilter] = useState<string>('')
+  const [persistedDashboardState] = useState<PersistedDashboardState | null>(() => readPersistedDashboardState())
+  const [selectedCountry, setSelectedCountry] = useState<string>(persistedDashboardState?.selectedCountry ?? '')
+  const [selectedState, setSelectedState] = useState<string>(persistedDashboardState?.selectedState ?? '')
+  const [selectedArea, setSelectedArea] = useState<string>(persistedDashboardState?.selectedArea ?? '')
+  const [selectedPurposes, setSelectedPurposes] = useState<string[]>(persistedDashboardState?.selectedPurposes ?? [])
+  const [selectedFeedFilter, setSelectedFeedFilter] = useState<FeedFilter>(persistedDashboardState?.selectedFeedFilter ?? 'all')
+  const [selectedVisibilityFilter, setSelectedVisibilityFilter] = useState<VisibilityFilter>(persistedDashboardState?.selectedVisibilityFilter ?? 'visible')
+  const [selectedSourceSite, setSelectedSourceSite] = useState<string>(persistedDashboardState?.selectedSourceSite ?? '')
+  const [selectedSourceGroup, setSelectedSourceGroup] = useState<string>(persistedDashboardState?.selectedSourceGroup ?? '')
+  const [selectedNetworkCode, setSelectedNetworkCode] = useState<string>(persistedDashboardState?.selectedNetworkCode ?? '')
+  const [selectedUserTagFilter, setSelectedUserTagFilter] = useState<string>(persistedDashboardState?.selectedUserTagFilter ?? '')
   const [cameraTags, setCameraTags] = useState<CameraTagMap>(() => {
     try {
       const raw = window.localStorage.getItem(CAMERA_TAG_STORAGE_KEY)
@@ -341,12 +411,15 @@ function App() {
       return {}
     }
   })
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>('3x3')
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>(persistedDashboardState?.layoutMode ?? '3x3')
   const [focusCameraId, setFocusCameraId] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<ViewMode>('wall')
+  const [hoveredMapCameraId, setHoveredMapCameraId] = useState<string | null>(null)
+  const [viewMode, setViewMode] = useState<ViewMode>(persistedDashboardState?.viewMode ?? 'wall')
+  const [wallPageSize, setWallPageSize] = useState<number>(persistedDashboardState?.wallPageSize ?? DEFAULT_WALL_PAGE_SIZE)
+  const [wallPage, setWallPage] = useState(1)
   const [presetName, setPresetName] = useState('')
   const [isPatrolRunning, setIsPatrolRunning] = useState(false)
-  const [patrolIntervalSec, setPatrolIntervalSec] = useState(6)
+  const [patrolIntervalSec, setPatrolIntervalSec] = useState(persistedDashboardState?.patrolIntervalSec ?? 6)
   const [patrolCursor, setPatrolCursor] = useState(0)
   const [presets, setPresets] = useState<ViewPreset[]>(() => {
     try {
@@ -461,15 +534,18 @@ function App() {
     setSelectedCountry(country)
     setSelectedState('')
     setSelectedArea('')
+    setWallPage(1)
   }
 
   const handleStateChange = (state: string) => {
     setSelectedState(state)
     setSelectedArea('')
+    setWallPage(1)
   }
 
   const handleAreaChange = (area: string) => {
     setSelectedArea(area)
+    setWallPage(1)
   }
 
   const handleClearFilters = () => {
@@ -483,6 +559,7 @@ function App() {
     setSelectedSourceGroup('')
     setSelectedNetworkCode('')
     setSelectedUserTagFilter('')
+    setWallPage(1)
   }
 
   const handlePurposeToggle = (purpose: string) => {
@@ -491,6 +568,37 @@ function App() {
         ? prev.filter((value) => value !== purpose)
         : [...prev, purpose]
     )
+    setWallPage(1)
+  }
+
+  const handleFeedFilterChange = (value: FeedFilter) => {
+    setSelectedFeedFilter(value)
+    setWallPage(1)
+  }
+
+  const handleVisibilityFilterChange = (value: VisibilityFilter) => {
+    setSelectedVisibilityFilter(value)
+    setWallPage(1)
+  }
+
+  const handleSourceSiteChange = (value: string) => {
+    setSelectedSourceSite(value)
+    setWallPage(1)
+  }
+
+  const handleSourceGroupChange = (value: string) => {
+    setSelectedSourceGroup(value)
+    setWallPage(1)
+  }
+
+  const handleNetworkCodeChange = (value: string) => {
+    setSelectedNetworkCode(value)
+    setWallPage(1)
+  }
+
+  const handleUserTagFilterChange = (value: string) => {
+    setSelectedUserTagFilter(value)
+    setWallPage(1)
   }
 
   const handleEditCameraTag = (cameraId: string) => {
@@ -552,6 +660,12 @@ function App() {
     })
   }
 
+  const handleWallPageSizeChange = (value: string) => {
+    const nextPageSize = clampWallPageSize(Number(value))
+    setWallPageSize(nextPageSize)
+    setWallPage(1)
+  }
+
   useEffect(() => {
     window.localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets))
   }, [PRESET_STORAGE_KEY, presets])
@@ -563,6 +677,42 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(HIDDEN_CAMERA_STORAGE_KEY, JSON.stringify(hiddenCameras))
   }, [HIDDEN_CAMERA_STORAGE_KEY, hiddenCameras])
+
+  useEffect(() => {
+    const nextState: PersistedDashboardState = {
+      selectedCountry,
+      selectedState: effectiveSelectedState,
+      selectedArea: effectiveSelectedArea,
+      selectedPurposes,
+      selectedFeedFilter,
+      selectedVisibilityFilter,
+      selectedSourceSite: effectiveSelectedSourceSite,
+      selectedSourceGroup: effectiveSelectedSourceGroup,
+      selectedNetworkCode: effectiveSelectedNetworkCode,
+      selectedUserTagFilter: effectiveSelectedUserTagFilter,
+      layoutMode,
+      viewMode,
+      patrolIntervalSec: clampPatrolInterval(patrolIntervalSec),
+      wallPageSize,
+    }
+
+    window.localStorage.setItem(DASHBOARD_STATE_STORAGE_KEY, JSON.stringify(nextState))
+  }, [
+    effectiveSelectedArea,
+    effectiveSelectedNetworkCode,
+    effectiveSelectedSourceGroup,
+    effectiveSelectedSourceSite,
+    effectiveSelectedState,
+    effectiveSelectedUserTagFilter,
+    layoutMode,
+    patrolIntervalSec,
+    selectedCountry,
+    selectedFeedFilter,
+    selectedPurposes,
+    selectedVisibilityFilter,
+    viewMode,
+    wallPageSize,
+  ])
 
   const handleSavePreset = () => {
     const name = presetName.trim()
@@ -583,6 +733,7 @@ function App() {
       selectedUserTagFilter: effectiveSelectedUserTagFilter,
       layoutMode,
       viewMode,
+      wallPageSize,
     }
 
     setPresets((prev) => [nextPreset, ...prev].slice(0, 12))
@@ -602,6 +753,8 @@ function App() {
     setSelectedUserTagFilter(preset.selectedUserTagFilter ?? '')
     setLayoutMode(preset.layoutMode)
     setViewMode(preset.viewMode)
+    setWallPageSize(clampWallPageSize(preset.wallPageSize ?? DEFAULT_WALL_PAGE_SIZE))
+    setWallPage(1)
     setFocusCameraId(null)
   }
 
@@ -609,57 +762,46 @@ function App() {
     setPresets((prev) => prev.filter((preset) => preset.id !== id))
   }
 
-  const getMaxTiles = (mode: LayoutMode): number => {
-    switch (mode) {
-      case '2x2':
-        return 4
-      case '3x3':
-        return 9
-      case '4x4':
-        return 16
-      default:
-        return 9
-    }
-  }
-
-  const maxTiles = getMaxTiles(layoutMode)
-  const wallCameras = filteredCameras.slice(0, maxTiles)
+  const totalWallPages = Math.max(1, Math.ceil(filteredCameras.length / wallPageSize))
+  const effectiveWallPage = Math.min(wallPage, totalWallPages)
+  const wallPageStart = (effectiveWallPage - 1) * wallPageSize
+  const wallPageEnd = wallPageStart + wallPageSize
+  const wallCameras = filteredCameras.slice(wallPageStart, wallPageEnd)
+  const wallRangeStart = filteredCameras.length === 0 ? 0 : wallPageStart + 1
+  const wallRangeEnd = filteredCameras.length === 0 ? 0 : Math.min(wallPageEnd, filteredCameras.length)
   const mapCameras = filteredCameras.filter((camera) => typeof camera.lat === 'number' && typeof camera.lon === 'number')
-  const mapBounds = useMemo(() => {
-    if (mapCameras.length === 0) {
-      return DEFAULT_MAP_BOUNDS
+  const isMountFujiMap = filteredCameras.length > 0 && filteredCameras.every(isMountFujiCamera)
+
+  const handleSelectCamera = (cameraId: string) => {
+    const cameraIndex = filteredCameras.findIndex((camera) => camera.id === cameraId)
+    if (cameraIndex >= 0) {
+      setWallPage(Math.floor(cameraIndex / wallPageSize) + 1)
     }
 
-    const lats = mapCameras.map((camera) => camera.lat as number)
-    const lons = mapCameras.map((camera) => camera.lon as number)
-    const minLat = Math.min(...lats)
-    const maxLat = Math.max(...lats)
-    const minLon = Math.min(...lons)
-    const maxLon = Math.max(...lons)
-    const latPadding = Math.max(0.4, (maxLat - minLat) * 0.12)
-    const lonPadding = Math.max(0.4, (maxLon - minLon) * 0.12)
-
-    return {
-      minLat: minLat - latPadding,
-      maxLat: maxLat + latPadding,
-      minLon: minLon - lonPadding,
-      maxLon: maxLon + lonPadding,
-    }
-  }, [mapCameras])
+    setFocusCameraId(cameraId)
+  }
 
   const patrolPool = useMemo(() => {
     if (viewMode === 'map') return mapCameras
-    if (focusCameraId) return filteredCameras
     return wallCameras
-  }, [viewMode, mapCameras, focusCameraId, filteredCameras, wallCameras])
+  }, [viewMode, mapCameras, wallCameras])
 
   const patrolTargetId = isPatrolRunning && patrolPool.length > 0
     ? patrolPool[patrolCursor % patrolPool.length]?.id
     : null
 
-  const effectiveFocusId = patrolTargetId ?? focusCameraId
+  const normalizedFocusCameraId = focusCameraId && filteredCameras.some((camera) => camera.id === focusCameraId)
+    ? focusCameraId
+    : null
+  const scopedFocusCameraId = viewMode === 'wall' && normalizedFocusCameraId && !wallCameras.some((camera) => camera.id === normalizedFocusCameraId)
+    ? (wallCameras[0]?.id ?? null)
+    : normalizedFocusCameraId
+  const effectiveFocusId = patrolTargetId ?? scopedFocusCameraId
   const focusedCamera = effectiveFocusId
     ? filteredCameras.find((camera) => camera.id === effectiveFocusId) || wallCameras[0] || filteredCameras[0]
+    : null
+  const hoveredMapCamera = viewMode === 'map' && hoveredMapCameraId
+    ? mapCameras.find((camera) => camera.id === hoveredMapCameraId) ?? null
     : null
 
   useEffect(() => {
@@ -682,13 +824,11 @@ function App() {
     setIsPatrolRunning(true)
   }
 
-  const getMarkerPosition = (lat: number, lon: number) => {
-    const x = ((lon - mapBounds.minLon) / (mapBounds.maxLon - mapBounds.minLon)) * 100
-    const y = 100 - ((lat - mapBounds.minLat) / (mapBounds.maxLat - mapBounds.minLat)) * 100
-    return { left: `${Math.min(98, Math.max(2, x))}%`, top: `${Math.min(98, Math.max(2, y))}%` }
-  }
-
-  const mapTitle = selectedCountry ? `${selectedCountry} Map Mode` : 'Camera Map Mode'
+  const mapTitle = isMountFujiMap
+    ? 'Mount Fuji View Map'
+    : selectedCountry
+      ? `${selectedCountry} Map Mode`
+      : 'Camera Map Mode'
 
   return (
     <div className="app-shell">
@@ -721,7 +861,7 @@ function App() {
               <select
                 className="filter-select"
                 value={selectedFeedFilter}
-                onChange={(event) => setSelectedFeedFilter(event.target.value as FeedFilter)}
+                onChange={(event) => handleFeedFilterChange(event.target.value as FeedFilter)}
               >
                 {FEED_FILTER_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -738,7 +878,7 @@ function App() {
               <select
                 className="filter-select"
                 value={selectedVisibilityFilter}
-                onChange={(event) => setSelectedVisibilityFilter(event.target.value as VisibilityFilter)}
+                onChange={(event) => handleVisibilityFilterChange(event.target.value as VisibilityFilter)}
               >
                 {VISIBILITY_FILTER_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -747,6 +887,19 @@ function App() {
                 ))}
               </select>
             </div>
+          </div>
+
+          <div className="filter-block">
+            <label htmlFor="wall-page-size">Load Per Page</label>
+            <input
+              id="wall-page-size"
+              type="number"
+              min={MIN_WALL_PAGE_SIZE}
+              max={MAX_WALL_PAGE_SIZE}
+              value={wallPageSize}
+              onChange={(event) => handleWallPageSizeChange(event.target.value)}
+              className="settings-input"
+            />
           </div>
 
           <div className="filter-block">
@@ -810,7 +963,7 @@ function App() {
               <select
                 className="filter-select"
                 value={effectiveSelectedSourceSite}
-                onChange={(event) => setSelectedSourceSite(event.target.value)}
+                onChange={(event) => handleSourceSiteChange(event.target.value)}
               >
                 <option value="">All Sources</option>
                 {sourceSites.map((sourceSite) => (
@@ -828,7 +981,7 @@ function App() {
               <select
                 className="filter-select"
                 value={effectiveSelectedSourceGroup}
-                onChange={(event) => setSelectedSourceGroup(event.target.value)}
+                onChange={(event) => handleSourceGroupChange(event.target.value)}
               >
                 <option value="">All Source Groups</option>
                 {sourceGroups.map((sourceGroup) => (
@@ -846,7 +999,7 @@ function App() {
               <select
                 className="filter-select"
                 value={effectiveSelectedNetworkCode}
-                onChange={(event) => setSelectedNetworkCode(event.target.value)}
+                onChange={(event) => handleNetworkCodeChange(event.target.value)}
               >
                 <option value="">All Networks</option>
                 {networkCodes.map((networkCode) => (
@@ -864,7 +1017,7 @@ function App() {
               <select
                 className="filter-select"
                 value={effectiveSelectedUserTagFilter}
-                onChange={(event) => setSelectedUserTagFilter(event.target.value)}
+                onChange={(event) => handleUserTagFilterChange(event.target.value)}
               >
                 <option value="">All Cameras</option>
                 {hasUntaggedCameras && <option value={UNTAGGED_FILTER}>Untagged Only</option>}
@@ -967,7 +1120,7 @@ function App() {
                   min={2}
                   max={30}
                   value={patrolIntervalSec}
-                  onChange={(event) => setPatrolIntervalSec(Number(event.target.value) || 6)}
+                  onChange={(event) => setPatrolIntervalSec(clampPatrolInterval(Number(event.target.value)))}
                   className="patrol-input"
                 />
                 <button
@@ -1033,31 +1186,88 @@ function App() {
             </div>
           </div>
 
+          {viewMode === 'wall' && filteredCameras.length > 0 && (
+            <div className="page-toolbar">
+              <div className="page-toolbar-meta">
+                <strong>{wallRangeStart}-{wallRangeEnd}</strong>
+                <span>of {filteredCameras.length} filtered cameras</span>
+              </div>
+              <div className="page-toolbar-controls">
+                <button
+                  type="button"
+                  className="layout-btn"
+                  onClick={() => setWallPage(Math.max(1, effectiveWallPage - 1))}
+                  disabled={effectiveWallPage <= 1}
+                >
+                  Prev
+                </button>
+                <span className="page-counter">Page {effectiveWallPage} / {totalWallPages}</span>
+                <button
+                  type="button"
+                  className="layout-btn"
+                  onClick={() => setWallPage(Math.min(totalWallPages, effectiveWallPage + 1))}
+                  disabled={effectiveWallPage >= totalWallPages}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
+
           {viewMode === 'map' ? (
             <div className="map-mode-wrap">
               <div className="malaysia-map">
-                <div className="map-grid" />
-                {mapCameras.map((camera) => {
-                  const position = getMarkerPosition(camera.lat as number, camera.lon as number)
-                  return (
-                    <button
-                      key={`marker-${camera.id}`}
-                      type="button"
-                      className={`map-marker ${effectiveFocusId === camera.id ? 'active' : ''}`}
-                      style={position}
-                      onClick={() => setFocusCameraId(camera.id)}
-                      title={`${camera.name} (${camera.area}, ${camera.state})`}
-                    >
-                      <span>{camera.id}</span>
-                    </button>
-                  )
-                })}
+                <CameraMap
+                  cameras={mapCameras}
+                  activeCameraId={effectiveFocusId}
+                  hoveredCameraId={hoveredMapCameraId}
+                  isMountFujiMap={isMountFujiMap}
+                  onSelectCamera={handleSelectCamera}
+                  onHoverCamera={setHoveredMapCameraId}
+                />
+                {isMountFujiMap && (
+                  <div className="map-context-banner">
+                    Hover markers to compare current Mount Fuji viewpoints by side and angle.
+                  </div>
+                )}
+                {hoveredMapCamera && (
+                  <div className={`map-hover-preview ${isMountFujiMap ? 'mount-fuji' : ''}`}>
+                    <div className="map-preview-head">
+                      <span className="map-preview-eyebrow">{hoveredMapCamera.source_group ?? 'Camera Preview'}</span>
+                      {hoveredMapCamera.view_hint && (
+                        <span className="map-view-hint">{hoveredMapCamera.view_hint}</span>
+                      )}
+                    </div>
+                    <strong className="map-preview-title">{hoveredMapCamera.name}</strong>
+                    <span className="map-preview-meta">
+                      {hoveredMapCamera.area}, {hoveredMapCamera.state}, {getCameraCountry(hoveredMapCamera.country)}
+                    </span>
+                    {getMapPreviewSource(hoveredMapCamera) ? (
+                      <img
+                        src={getMapPreviewSource(hoveredMapCamera) ?? ''}
+                        alt={`Preview of ${hoveredMapCamera.name}`}
+                        className="map-preview-image"
+                      />
+                    ) : (
+                      <div className="map-preview-placeholder">
+                        Preview available after opening the camera panel.
+                      </div>
+                    )}
+                    <span className="map-preview-meta">
+                      Click marker to pin this camera in the side panel.
+                    </span>
+                  </div>
+                )}
               </div>
 
               <aside className="map-focus-panel">
                 {focusedCamera ? (
                   <>
-                    <p className="map-focus-note">Marker linked camera:</p>
+                    <p className="map-focus-note">
+                      {isMountFujiMap
+                        ? 'Hover markers for quick angle comparison, then click to pin the best viewpoint.'
+                        : 'Marker linked camera:'}
+                    </p>
                     <CameraTile
                       key={`map-focus-${focusedCamera.id}`}
                       id={focusedCamera.id}
@@ -1117,12 +1327,12 @@ function App() {
                 />
               </div>
               <aside className="focus-list" aria-label="Focus camera list">
-                {filteredCameras.slice(0, 16).map((camera) => (
+                {wallCameras.map((camera) => (
                   <button
                     key={`focus-list-${camera.id}`}
                     type="button"
                     className={`focus-list-item ${camera.id === (focusedCamera?.id ?? '') ? 'active' : ''}`}
-                    onClick={() => setFocusCameraId(camera.id)}
+                    onClick={() => handleSelectCamera(camera.id)}
                   >
                     <span>{camera.id}</span>
                     <strong>{camera.name}</strong>
@@ -1156,7 +1366,7 @@ function App() {
                   onAddCustomTag={() => handleEditCameraTag(camera.id)}
                   onClearTag={() => handleClearCameraTag(camera.id)}
                   onEditTag={() => handleEditCameraTag(camera.id)}
-                  onClick={() => setFocusCameraId(camera.id)}
+                  onClick={() => handleSelectCamera(camera.id)}
                   isActive={isPatrolRunning && !focusCameraId && patrolTargetId === camera.id}
                 />
               ))}
